@@ -11,7 +11,7 @@ Insert Description Here
 
 Getting the board into bootloader mode:
 
-To flash firmware onto this board, you'll need to bring the PCB into bootloader mode. To enter bootloader mode, use tweezers or a paperclip to short the two reset pins. The reset pins are located next to the Caps Lock switch footprint.
+To flash firmware onto this board, you'll need to bring the PCB into bootloader mode. To enter bootloader mode, use tweezers or a paperclip to short the two reset pins. The reset pins are located next to the Caps Lock switch footprint. While the reset pins are shorted, connect the USB cable.
 
 Make example for this keyboard (after setting up your build environment):
 

@@ -18,15 +18,6 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 #pragma once
 
-#include "config_common.h"
-
-/* USB Device descriptor parameter */
-#define VENDOR_ID       0x7470 // "tp"
-#define PRODUCT_ID      0x0001
-#define DEVICE_VER      0x0001
-#define MANUFACTURER    thockpop
-#define PRODUCT         Curie
-
 /* key matrix size */
 #define MATRIX_ROWS 10
 #define MATRIX_COLS 10
@@ -39,26 +30,20 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #define DIODE_DIRECTION COL2ROW
 
 /* RGB settings */
-#define RGB_DI_PIN GP29
-#define RGBLED_NUM 47
-#define DRIVER_LED_TOTAL 47
 #define RGBLIGHT_LAYERS
 #define RGBLIGHT_SLEEP // If defined, the RGB lighting will be switched off when the host goes to sleep */
-#define RGBLIGHT_LIMIT_VAL 150 // The maximum brightness level
-#define RGBLIGHT_DEFAULT_HUE 185 // Violet
-#define RGBLIGHT_DEFAULT_SAT 100
 #define RGBLIGHT_DEFAULT_MODE RGBLIGHT_MODE_STATIC_LIGHT
-#define RGBLIGHT_EFFECT_BREATHING
-#define RGBLIGHT_EFFECT_RAINBOW_SWIRL
 
-/* encoders */
-#define ENCODERS_PAD_A { GP20 }
-#define ENCODERS_PAD_B { GP21 }
-#define ENCODER_RESOLUTION 4
-
-/* OLED */
-#define OLED_WIDTH 128
-#define OLED_HEIGHT 32
-#define OLED_UPDATE_INTERVAL 40
-#define OLED_TIMEOUT 60000
-#define OLED_FADE_OUT
+/* LCD */
+#define SPI_DRIVER   SPID1
+#define SPI_SCK_PIN  GP26
+#define SPI_MOSI_PIN GP27
+#define SPI_MISO_PIN GP0 // MISO not used, so we set to a leftover pin.
+#define LCD_CS_PIN   GP25
+#define LCD_DC_PIN   GP23
+#define LCD_BL_PIN   GP22
+#define LCD_RST_PIN  GP24
+#define LCD_SPI_DIV 4
+#define LCD_SPI_MODE 0
+#define LCD_WIDTH 160
+#define LCD_HEIGHT 80

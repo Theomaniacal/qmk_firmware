@@ -16,18 +16,29 @@
  */
 
 #include <stdio.h>
-#include <string.h>
 #include "curie.h"
-#include "animations/spiral.c"
-#include OLED_FONT_H
+#include <qp.h>
+#include "raw_hid.h"
+#include "fonts/montserrat11.qff.h"
+#include "fonts/montserrat14.qff.h"
+#include "fonts/lato22.qff.h"
+#include "graphics/signature.qgf.h"
 
 #define ENCODER_LONG_PRESS_TIME 300 // 0.3 second for press to count as long press
 #define ANIM_SPEED_MAX 60
 #define ANIM_SPEED_MIN 10
-#define OLED_MENU_MODE_AMOUNT 3 // Used to represent how many OLED modes cannot be saved
+#define DISPLAY_MENU_MODE_AMOUNT 3 // Used to represent how many OLED modes cannot be saved
 #define ENC_MENU_MODE_AMOUNT 1 // Used to represent how many Encoder modes cannot be saved
+#define LCD_TIMEOUT 30000
 
-static bool should_redraw_oled = true;
+static painter_device_t display;
+static painter_font_handle_t small_font;
+static painter_font_handle_t med_font;
+static painter_font_handle_t large_font;
+
+static painter_image_handle_t signature;
+
+static bool should_redraw_display = true;
 static bool encoder_is_down = false;
 static bool encoder_secondary_push_active = false;
 static bool encoder_is_short_pressed = false;
@@ -39,19 +50,17 @@ static int8_t max_select_index = 0;
 static bool is_alt_tab_active = false;
 static uint16_t alt_tab_timer = 0;
 
-static enum encoder_modes
-{
+static enum encoder_modes {
     Select,
     Media,
     Window,
     Scroll,
-    Underglow
+    Lighting
 } enc_mode, saved_enc_mode;
 
-static enum oled_modes
-{
+static enum display_modes {
     Menu,
-    OLED_Menu,
+    Display_Menu,
     Enc_Menu,
     Logo,
     WPM,
@@ -63,242 +72,168 @@ static enum oled_modes
     NA4,
     Blank,
     Off
-} oled_mode, saved_oled_mode;
+} display_mode, saved_display_mode;
 
-// OLED STUFF -----------------
+// DISPLAY STUFF -----------------
 char wpm_str[10];
 
-// OLED Draw Functions
-
-static void draw_line_h(uint8_t x, uint8_t y, uint8_t length, bool on)
-{
-     for (uint8_t i = 0; i < length; i++)
-     {
-         oled_write_pixel(x + i, y, on);
-     }
+void raw_hid_receive(uint8_t *data, uint8_t length) {
+    // Your code goes here. data is the packet received from host.
 }
 
- static void draw_line_v(uint8_t x, uint8_t y, uint8_t length, bool on)
- {
-     for (uint8_t i = 0; i < length; i++) {
-         oled_write_pixel(x, y + i, on);
-     }
- }
-
- static void draw_rect_soft(uint8_t x, uint8_t y, uint8_t width, uint8_t height, bool on)
- {
-    draw_line_h(x + 1, y, width - 2, on);
-    draw_line_h(x + 1, y + height - 1, width - 2, on);
-
-    draw_line_v(x, y + 1, height - 2, on);
-    draw_line_v(x + width - 1, y + 1, height - 2, on);
+// DISPLAY Draw Functions
+void draw_text_centered(painter_device_t device, uint8_t x, uint8_t y, painter_font_handle_t font, char* str, uint8_t hue_fg, uint8_t sat_fg, uint8_t val_fg, uint8_t hue_bg, uint8_t sat_bg, uint8_t val_bg) {
+    int16_t text_width = qp_textwidth(font, str);
+    qp_drawtext_recolor(device, x - (text_width / 2), y - (font->line_height / 2), font, str, hue_fg, sat_fg, val_fg, hue_bg, sat_bg, val_bg);
 }
 
-void write_char_at_pixel_xy(uint8_t x, uint8_t y, const char data, bool invert)
-{
-    uint8_t i, j, temp;
-    uint8_t cast_data = (uint8_t)data;
-    
-    const uint8_t *glyph = &font[((uint8_t)cast_data - OLED_FONT_START) * OLED_FONT_WIDTH];
-    temp = pgm_read_byte(glyph);
-    for (i = 0; i < OLED_FONT_WIDTH ; i++) {
-        for (j = 0; j < OLED_FONT_HEIGHT; j++) {
-            if (temp & 0x01)
-            {
-                oled_write_pixel(x + i, y + j, !invert);
-            } 
-            else
-            {
-                oled_write_pixel(x + i, y + j, invert);
-            }
-
-            temp >>= 1;
-        }
-        temp = pgm_read_byte(++glyph);
-    }
-}
-
-void write_chars_at_pixel_xy(uint8_t x, uint8_t y, const char *data, bool invert)
-{
-    uint8_t c = data[0];
-    uint8_t offset = 0;
-    while (c != 0) {
-        write_char_at_pixel_xy(x + offset, y, c, invert);
-        data++;
-        c = data[0];
-        offset += 6;
-    }
-}
-
-
-void draw_rect_filled_soft(uint8_t x, uint8_t y, uint8_t width, uint8_t height, bool on)
-{
-    for (int i = x; i < x + width; i++) {
-        if (i == x || i == (x + width - 1))
-            draw_line_v(i, y + 1, height - 2, on);
-        else
-            draw_line_v(i, y, height, on);
-    }
-}
-
-void draw_text_rectangle(uint8_t x, uint8_t y, uint8_t width, char* str, bool filled)
-{
-    uint8_t left_x = x - (strlen(str) * 3);
-    if (filled) {
-        draw_rect_filled_soft(x, y, width, 11, true);
-        write_chars_at_pixel_xy(left_x + (width / 2), y + 2, str, true);
-    } else {
-        draw_rect_soft(x, y, width, 11, true);
-        write_chars_at_pixel_xy(left_x + (width / 2), y + 2, str, false);
-    }
-}
-
-void draw_text_rectangle_center(uint8_t x, uint8_t y, uint8_t width, char* str, bool filled)
-{
-    uint8_t left_x = x - (strlen(str) * 3);
+void draw_button(painter_device_t device, uint8_t x, uint8_t y, uint8_t width, uint8_t height, painter_font_handle_t font, char* str, uint8_t hue_fg, uint8_t sat_fg, uint8_t val_fg, uint8_t hue_bg, uint8_t sat_bg, uint8_t val_bg, uint8_t hue_filled_fg, uint8_t sat_filled_fg, uint8_t val_filled_fg, uint8_t hue_filled_bg, uint8_t sat_filled_bg, uint8_t val_filled_bg, bool filled) {
+    uint8_t half_width = width / 2;
+    uint8_t half_height = height / 2;
 
     if (filled) {
-        draw_rect_filled_soft(x - (width / 2), y, width, 11, true);
-        write_chars_at_pixel_xy(left_x, y + 2, str, true);
+        qp_rect(device, x - half_width + 4, y - half_height, x + half_width - 4, y + half_height, hue_filled_bg, sat_filled_bg, val_filled_bg, true);
+
+        qp_line(device, x - half_width + 3, y - half_height + 1, x - half_width + 3, y + half_height - 1, hue_filled_bg, sat_filled_bg, val_filled_bg);
+        qp_line(device, x + half_width - 3, y - half_height + 1, x + half_width - 3, y + half_height - 1, hue_filled_bg, sat_filled_bg, val_filled_bg);
+
+        qp_line(device, x - half_width + 2, y - half_height + 1, x - half_width + 2, y + half_height - 1, hue_filled_bg, sat_filled_bg, val_filled_bg);
+        qp_line(device, x + half_width - 2, y - half_height + 1, x + half_width - 2, y + half_height - 1, hue_filled_bg, sat_filled_bg, val_filled_bg);
+
+        qp_line(device, x - half_width + 1, y - half_height + 2, x - half_width + 1, y + half_height - 2, hue_filled_bg, sat_filled_bg, val_filled_bg);
+        qp_line(device, x + half_width - 1, y - half_height + 2, x + half_width - 1, y + half_height - 2, hue_filled_bg, sat_filled_bg, val_filled_bg);
+
+        qp_line(device, x - half_width, y - half_height + 4, x - half_width, y + half_height - 4, hue_filled_bg, sat_filled_bg, val_filled_bg);
+        qp_line(device, x + half_width, y - half_height + 4, x + half_width, y + half_height - 4, hue_filled_bg, sat_filled_bg, val_filled_bg);
+
+
+
+        qp_line(device, x - half_width + 4, y - half_height, x + half_width - 4, y - half_height, hue_fg, sat_fg, val_fg);
+        qp_line(device, x - half_width + 4, y + half_height, x + half_width - 4, y + half_height, hue_fg, sat_fg, val_fg);
+
+        qp_line(device, x - half_width + 2, y - half_height + 1, x - half_width + 3, y - half_height + 1,  hue_fg, sat_fg, val_fg);
+        qp_line(device, x + half_width - 2, y - half_height + 1, x + half_width - 3, y - half_height + 1,  hue_fg, sat_fg, val_fg);
+        qp_line(device, x - half_width + 2, y + half_height - 1, x - half_width + 3, y + half_height - 1,  hue_fg, sat_fg, val_fg);
+        qp_line(device, x + half_width - 2, y + half_height - 1, x + half_width - 3, y + half_height - 1,  hue_fg, sat_fg, val_fg);
+
+        qp_line(device, x - half_width + 1, y - half_height + 2, x - half_width + 1, y - half_height + 3,  hue_fg, sat_fg, val_fg);
+        qp_line(device, x + half_width - 1, y - half_height + 2, x + half_width - 1, y - half_height + 3,  hue_fg, sat_fg, val_fg);
+        qp_line(device, x - half_width + 1, y + half_height - 2, x - half_width + 1, y + half_height - 3,  hue_fg, sat_fg, val_fg);
+        qp_line(device, x + half_width - 1, y + half_height - 2, x + half_width - 1, y + half_height - 3,  hue_fg, sat_fg, val_fg);
+
+        qp_line(device, x - half_width, y - half_height + 4, x - half_width, y + half_height - 4, hue_fg, sat_fg, val_fg);
+        qp_line(device, x + half_width, y - half_height + 4, x + half_width, y + half_height - 4, hue_fg, sat_fg, val_fg); 
+
+        draw_text_centered(device, x, y, font, str, hue_filled_fg, sat_filled_fg, val_filled_fg, hue_filled_bg, sat_filled_bg, val_filled_bg);
     } else {
-        draw_rect_soft(x - (width / 2), y, width, 11, true);
-        write_chars_at_pixel_xy(left_x, y + 2, str, false);
+        qp_line(device, x - half_width + 4, y - half_height, x + half_width - 4, y - half_height, hue_fg, sat_fg, val_fg);
+        qp_line(device, x - half_width + 4, y + half_height, x + half_width - 4, y + half_height, hue_fg, sat_fg, val_fg);
+
+        qp_line(device, x - half_width + 2, y - half_height + 1, x - half_width + 3, y - half_height + 1,  hue_fg, sat_fg, val_fg);
+        qp_line(device, x + half_width - 2, y - half_height + 1, x + half_width - 3, y - half_height + 1,  hue_fg, sat_fg, val_fg);
+        qp_line(device, x - half_width + 2, y + half_height - 1, x - half_width + 3, y + half_height - 1,  hue_fg, sat_fg, val_fg);
+        qp_line(device, x + half_width - 2, y + half_height - 1, x + half_width - 3, y + half_height - 1,  hue_fg, sat_fg, val_fg);
+
+        qp_line(device, x - half_width + 1, y - half_height + 2, x - half_width + 1, y - half_height + 3,  hue_fg, sat_fg, val_fg);
+        qp_line(device, x + half_width - 1, y - half_height + 2, x + half_width - 1, y - half_height + 3,  hue_fg, sat_fg, val_fg);
+        qp_line(device, x - half_width + 1, y + half_height - 2, x - half_width + 1, y + half_height - 3,  hue_fg, sat_fg, val_fg);
+        qp_line(device, x + half_width - 1, y + half_height - 2, x + half_width - 1, y + half_height - 3,  hue_fg, sat_fg, val_fg);
+
+        qp_line(device, x - half_width, y - half_height + 4, x - half_width, y + half_height - 4, hue_fg, sat_fg, val_fg);
+        qp_line(device, x + half_width, y - half_height + 4, x + half_width, y + half_height - 4, hue_fg, sat_fg, val_fg); 
+
+        draw_text_centered(device, x, y, font, str, hue_fg, sat_fg, val_fg, hue_bg, sat_bg, val_bg);
     }
 }
 
-void draw_arrow(uint8_t x, uint8_t y, uint8_t size, bool forward)
-{
-    if (forward)
-    {
-        for (int i = size; i >= 0; i--)
-        {
-            int8_t increment = size - i;
-            draw_line_v(x - (size / 2) + increment, y - (size / 2) + increment / 2, size + 1 - increment, true);
-        }
-    }
-    else
-    {
-        for (int i = size; i >= 0; i--)
-        {
-            int8_t increment = size - i;
-            draw_line_v(x + (size / 2) - increment, y - (size / 2) + increment / 2, size + 1 - increment, true);
-        }
-    }
-}
-
-int16_t map(int16_t x, int16_t x1, int16_t x2, int16_t y1, int16_t y2)
-{
-    return (x - x1) * (y2 - y1) / (x2 - x1) + y1;
-}
-
-/*
-static void render_logo(void)
-{
-    static const char PROGMEM thockpop_logo[] = {
-        31,  1,  1,  1,  1,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,192,192,192,192,224,224,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  1,  1,  1,  1, 31,
-        0,  0,  0,  0,  0,  0,  0,  0,  0,  0, 96,240,248,248,248,240,224,240,224,192,  0,  0,  1,127,255,255,255,255,255,254,126,254,254,254,252,248,224,  0,192,240,248,248,252,252,124,252,252,248,248,240,192,  0,128,192,224,224,240,240,240,240,224,236,254,254,254,255,255,252,224,240,248,248,248, 60,  0,  0,  0,  0,  0,224,248,248,252,252,126,126,126,252,252,248,240,224,224,240,248,252,252,126,126,126,252,252,248,240,224,192,240,248,252,252,254,126,126,252,252,252,248,224,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0, 
-        0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  1,  3, 15, 31,127,255,255,255,253,248,248,248,240,223,127,127,127,127,127, 56,  7, 63, 63, 63, 63, 31, 28,  7, 31, 63, 63,127,126,124,126,127, 63, 63, 31,  7, 14, 63,255,255,255,255,243,243,243,225,193,  0,  1, 15,127,255,255,255,255,255,255,127,126,126,126,126,120,  0,255,255,255,255,255,254,126,126, 63, 63, 31, 15,  7,  7, 15, 31, 63, 63,126,126,126, 63, 63, 31, 15,  7,255,255,255,255,255,255,126,126, 63, 63, 31, 31,  7,  0,  0,  0,  0,  0,  0,  0,  0,  0, 
-        0,248,128,128,128,128,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  1,  1,  3,  3,  3,  1,  1,  1,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  1,  1,  1,  1,  1,  1,  0,  0,  0,  0,  0,  3,  3,  3,  1,  1,  1,  0,  0,  0,  0,  0,  0,  0,  7,  7,  7,  7,  7,  3,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  3,  7,  7,  7,  7,  7,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0, 
-        0,128,128,128,128,248,
-    };
-
-    oled_write_raw_P(thockpop_logo, sizeof(thockpop_logo));
-}
-*/
-
-static void render_animation(uint8_t frame) {
-    oled_write_raw_P(spiral_anim[frame], sizeof(spiral_anim[frame]));
-}
-
-static void change_encoder_mode(enum encoder_modes mode)
-{
+static void change_encoder_mode(enum encoder_modes mode) {
     enc_mode = mode;
-    should_redraw_oled = true;
+    should_redraw_display = true;
 
-    if (mode != Select)
-    {
+    if (mode != Select) {
         saved_enc_mode = mode;
     }
 }
 
-static void change_oled_mode(enum oled_modes mode)
-{
-    oled_mode = mode;
-    should_redraw_oled = true;
+static void change_display_mode(enum display_modes mode) {
+    display_mode = mode;
+    should_redraw_display = true;
 
-    switch (mode)
-    {
+    switch (mode) {
         case Menu:
-            max_select_index = Enc_Menu; // Last enum element lets us know the max index
+            max_select_index = 1; // Last enum element lets us know the max index
             break;
-        case OLED_Menu:
-            max_select_index = Off - OLED_MENU_MODE_AMOUNT; // Last enum element lets us know the max index
+        case Display_Menu:
+            max_select_index = Off - DISPLAY_MENU_MODE_AMOUNT; // Last enum element lets us know the max index
             break;
         case Enc_Menu:
-            max_select_index = Underglow - ENC_MENU_MODE_AMOUNT; // Last enum element lets us know the max index
+            max_select_index = Lighting - ENC_MENU_MODE_AMOUNT; // Last enum element lets us know the max index
             break;
         default:
-            saved_oled_mode = mode;
+            saved_display_mode = mode;
             break;
     }
 }
 
+void increase_active_select_index(int8_t amount) {
+    should_redraw_display = true;
+
+    if (active_select_index + amount > max_select_index) { // If active index is greater than max index, wrap the selection to first index
+        active_select_index = should_menu_select_wrap ? 0 : max_select_index;
+    } else if (active_select_index + amount < 0) { // If active index is less than 0, wrap the selection to last index
+        active_select_index = should_menu_select_wrap ? max_select_index : 0;
+    } else {
+        active_select_index += amount;
+    }
+
+}
+
 // Handle encoder presses
-void enc_state_update(void)
-{
-    if (encoder_is_down && timer_elapsed32(encoder_press_timer) >= ENCODER_LONG_PRESS_TIME)
-    {
+void enc_state_update(void) {
+    if (encoder_is_down && timer_elapsed32(encoder_press_timer) >= ENCODER_LONG_PRESS_TIME) {
         encoder_is_down = false;
         encoder_press_timer = timer_read32();
 
         encoder_is_long_pressed = true;
     }
 
-    if (encoder_is_long_pressed)
-    {
+    if (encoder_is_long_pressed) {
         encoder_is_long_pressed = false;
-        switch (enc_mode)
-        {
+        switch (enc_mode) {
             case Select:
                 change_encoder_mode(saved_enc_mode);
-                change_oled_mode(saved_oled_mode);
+                change_display_mode(saved_display_mode);
                 break;
 
             default:
                 active_select_index = 0;
                 change_encoder_mode(Select);
-                change_oled_mode(Menu);
+                change_display_mode(Menu);
                 
                 break;
         }
-    }
-    else if (encoder_is_short_pressed)
-    {
+    } else if (encoder_is_short_pressed) {
         encoder_is_short_pressed = false;
-        switch (enc_mode)
-        {
+        switch (enc_mode) {
             case Select:
-                switch (oled_mode)
-                {
+                switch (display_mode) {
                     case Menu:
-                        switch (active_select_index)
-                        {
+                        switch (active_select_index) {
                             case 0:
-                                active_select_index = saved_oled_mode - OLED_MENU_MODE_AMOUNT; // Minus 3 because the first 3 OLED modes are menus
-                                change_oled_mode(OLED_Menu);
+                                active_select_index = saved_display_mode - DISPLAY_MENU_MODE_AMOUNT; // Minus 3 because the first 3 OLED modes are menus
+                                change_display_mode(Display_Menu);
                                 change_encoder_mode(Select);
                                 break;
                             case 1:
                                 active_select_index = saved_enc_mode - ENC_MENU_MODE_AMOUNT; // Minus 1 because the first encoder mode is Select
-                                change_oled_mode(Enc_Menu);
+                                change_display_mode(Enc_Menu);
                                 change_encoder_mode(Select);
                                 break;
                         }
                         break;
-                    case OLED_Menu:
-                        if (active_select_index != Blank - OLED_MENU_MODE_AMOUNT)
-                        {
-                            change_oled_mode(active_select_index + OLED_MENU_MODE_AMOUNT);
+                    case Display_Menu:
+                        if (active_select_index != Blank - DISPLAY_MENU_MODE_AMOUNT) {
+                            change_display_mode(active_select_index + DISPLAY_MENU_MODE_AMOUNT);
                             change_encoder_mode(saved_enc_mode);
                         }
 
@@ -306,26 +241,26 @@ void enc_state_update(void)
                         /*switch (active_select_index)
                         {
                             case 0:
-                                change_oled_mode(Logo);
+                                change_display_mode(Logo);
                                 change_encoder_mode(saved_enc_mode);
                                 break;
                             case 1:
-                                change_oled_mode(WPM);
+                                change_display_mode(WPM);
                                 change_encoder_mode(saved_enc_mode);
                                 break;
                             case 2:
-                                change_oled_mode(System);
+                                change_display_mode(System);
                                 change_encoder_mode(saved_enc_mode);
                                 break;
                             case 3:
-                                change_oled_mode(Weather);
+                                change_display_mode(Weather);
                                 change_encoder_mode(saved_enc_mode);
                                 break;
                             case 4:
                                 // Do nothing. Used so user has to move selection once more right to confirm "Display Off"
                                 break;
                             case 5:
-                                change_oled_mode(Off);
+                                change_display_mode(Off);
                                 change_encoder_mode(saved_enc_mode);
                                 break;
                         }*/
@@ -333,10 +268,9 @@ void enc_state_update(void)
 
                     case Enc_Menu:
                         change_encoder_mode(active_select_index + ENC_MENU_MODE_AMOUNT);
-                        change_oled_mode(saved_oled_mode);
+                        change_display_mode(saved_display_mode);
                         
-                        /*switch (active_select_index)
-                        {
+                        /*switch (active_select_index) {
                             case 0:
                                 change_encoder_mode(Media);
                                 break;
@@ -347,7 +281,7 @@ void enc_state_update(void)
                                 change_encoder_mode(Scroll);
                                 break;
                             case 3:
-                                change_encoder_mode(Underglow);
+                                change_encoder_mode(Lighting);
                                 break;
                         }*/
                         break;
@@ -357,55 +291,40 @@ void enc_state_update(void)
                 }
                 break;
             case Media:
-                if (encoder_secondary_push_active)
-                {
+                if (encoder_secondary_push_active) {
                     encoder_secondary_push_active = false;
                     tap_code(KC_MUTE);
-                }
-                else
-                {
+                } else {
                     tap_code(KC_MPLY);
                 }
 
                 break;
             case Window:
-                    if (encoder_secondary_push_active)
-                    {
+                    if (encoder_secondary_push_active) {
                         encoder_secondary_push_active = false;
                         tap_code(KC_MUTE);
-                    }
-                    else
-                    {
-                        if (is_alt_tab_active)
-                        {
+                    } else {
+                        if (is_alt_tab_active) {
                             tap_code(KC_ENT);
-                        }
-                        else
-                        {
+                        } else {
                             tap_code(KC_MPLY);
                         }
                         
                     }
                 break;
             case Scroll:
-                if (encoder_secondary_push_active)
-                {
+                if (encoder_secondary_push_active) {
                     encoder_secondary_push_active = false;
                     tap_code(KC_MUTE);
-                }
-                else
-                {
+                } else {
                     tap_code(KC_MPLY);
                 }
                 break;
-            case Underglow:
-                if (encoder_secondary_push_active)
-                {
+            case Lighting:
+                if (encoder_secondary_push_active) {
                     encoder_secondary_push_active = false;
                     rgblight_step();
-                }
-                else
-                {
+                } else {
                     rgblight_toggle();
                 }
                 break;
@@ -413,130 +332,163 @@ void enc_state_update(void)
     }
 }
 
-// Handle OLED draw
-bool oled_task_kb(void)
-{
-    if (!should_redraw_oled) { return false; }
-    should_redraw_oled = false;
+void keyboard_post_init_kb(void) {
+    enc_mode = Media;
+    saved_enc_mode = enc_mode;
 
-    oled_clear();
+    display_mode = Logo;
+    saved_display_mode = display_mode;
 
-    switch (oled_mode)
-    {
-        case Logo:
-            //render_logo();
-            write_chars_at_pixel_xy(OLED_WIDTH / 2 - (14 * 3), OLED_HEIGHT / 2 - 3, "Curie Southpaw", false);
+    setPinOutput(LCD_BL_PIN);
+    writePinHigh(LCD_BL_PIN);
+
+    wait_ms(150);
+
+    display = qp_st7735_make_spi_device(80, 160, LCD_CS_PIN, LCD_DC_PIN, LCD_RST_PIN, LCD_SPI_DIV, LCD_SPI_MODE); // Create the display
+    qp_init(display, QP_ROTATION_270);   // Initialise the display
+
+    small_font = qp_load_font_mem(font_montserrat11);
+    med_font = qp_load_font_mem(font_montserrat14);
+    large_font = qp_load_font_mem(font_lato22);
+
+    signature = qp_load_image_mem(gfx_signature);
+
+    qp_power(display, true);
+    qp_clear(display);
+
+    keyboard_post_init_user();
+}
+
+void suspend_power_down_user(void) {
+    qp_power(display, false);
+    writePinLow(LCD_BL_PIN);
+}
+
+void suspend_wakeup_init_user(void) {
+    qp_power(display, true);
+    writePinHigh(LCD_BL_PIN);
+}
+
+void housekeeping_task_kb(void) {
+    if (last_input_activity_elapsed() < LCD_TIMEOUT) {
+        qp_power(display, true);
+    } else {
+        qp_power(display, false);
+        change_encoder_mode(saved_enc_mode);
+        change_display_mode(saved_display_mode);
+    }
+
+    static uint32_t last_draw = 0;
+    if (timer_elapsed32(last_draw) > 33) { // Throttle to 30fps
+        last_draw = timer_read32();
+    } else {
+        return;
+    }
+
+    if (!should_redraw_display) { return; }
+    should_redraw_display = false;
+    qp_rect(display, 0, 0, 160, 81, HSV_BLACK, true);
+
+    switch (display_mode) {
+        case Logo: {
+            //qp_drawimage(display, 0, 0, signature);
+            qp_drawimage_recolor(display, 0, 0, signature, 0, 0, 255, rgblight_get_hue(), 150, 150);
+
+            //draw_text_centered(display, 80, 30, large_font, "C  U  R  I  E", HSV_WHITE, HSV_BLACK);
+            //draw_text_centered(display, 80, 50, med_font, "SOUTHPAW", HSV_WHITE, HSV_BLACK);
+
             break;
+        }
 
         case Menu:
-            draw_text_rectangle_center(2 * OLED_WIDTH / 7, 8, 46, "DISPLAY", active_select_index == 0);
-            draw_text_rectangle_center(5 * OLED_WIDTH / 7, 8, 46, "ENCODER", active_select_index == 1);
-            switch (saved_oled_mode)
-            {
-                case Logo: { write_chars_at_pixel_xy(2 * OLED_WIDTH / 7 - (4 * 3), 19, "Logo", false); break; }
-                case WPM: { write_chars_at_pixel_xy(2 * OLED_WIDTH / 7 - (3 * 3), 19, "WPM", false); break; }
-                case System: { write_chars_at_pixel_xy(2 * OLED_WIDTH / 7 - (6 * 3), 19, "System", false); break; }
-                case Weather: { write_chars_at_pixel_xy(2 * OLED_WIDTH / 7 - (7 * 3), 19, "Weather", false); break; }
-                case WPM2: { write_chars_at_pixel_xy(2 * OLED_WIDTH / 7 - (4 * 3), 19, "WPM2", false); break; }
-                case NA2: { write_chars_at_pixel_xy(2 * OLED_WIDTH / 7 - (3 * 3), 19, "NA2", false); break; }
-                case NA3: { write_chars_at_pixel_xy(2 * OLED_WIDTH / 7 - (3 * 3), 19, "NA3", false); break; }
-                case NA4: { write_chars_at_pixel_xy(2 * OLED_WIDTH / 7 - (3 * 3), 19, "NA4", false); break; }
-                case Off: { write_chars_at_pixel_xy(2 * OLED_WIDTH / 7 - (3 * 3), 19, "Off", false); break; }
-                default: { write_chars_at_pixel_xy(2 * OLED_WIDTH / 7 - (5 * 3), 19, "Error", false); break; }
+            draw_button(display, 44, 30, 68, 20, small_font, "DISPLAY", HSV_WHITE, HSV_BLACK, HSV_WHITE, HSV_BLUE, active_select_index == 0);
+            draw_button(display, 116, 30, 68, 20, small_font, "ENCODER", HSV_WHITE, HSV_BLACK, HSV_WHITE, HSV_BLUE, active_select_index == 1);
+
+            switch (saved_display_mode) {
+                case Logo: { draw_text_centered(display, 44, 50, small_font, "Logo", 0, 0, 230, HSV_BLACK); break; }
+                case WPM: { draw_text_centered(display, 44, 50, small_font, "WPM", 0, 0, 230, HSV_BLACK); break; }
+                case System: { draw_text_centered(display, 44, 50, small_font, "System", 0, 0, 230, HSV_BLACK); break; }
+                case Weather: { draw_text_centered(display, 44, 50, small_font, "Weather", 0, 0, 230, HSV_BLACK); break; }
+                case WPM2: { draw_text_centered(display, 44, 50, small_font, "WPM2", 0, 0, 230, HSV_BLACK); break; }
+                case NA2: { draw_text_centered(display, 44, 50, small_font, "NA2", 0, 0, 230, HSV_BLACK); break; }
+                case NA3: { draw_text_centered(display, 44, 50, small_font, "NA3", 0, 0, 230, HSV_BLACK); break; }
+                case NA4: { draw_text_centered(display, 44, 50, small_font, "NA4", 0, 0, 230, HSV_BLACK); break; }
+                case Off: { draw_text_centered(display, 44, 50, small_font, "Off", 0, 0, 230, HSV_BLACK); break; }
+                default: { draw_text_centered(display, 44, 50, small_font, "Error", 0, 0, 230, HSV_BLACK); break; }
 
             }
 
-            switch (saved_enc_mode)
-            {
-                case Media: { write_chars_at_pixel_xy(5 * OLED_WIDTH / 7 - (5 * 3), 19, "Media", false); break; }
-                case Window: { write_chars_at_pixel_xy(5 * OLED_WIDTH / 7 - (6 * 3), 19, "Window", false); break; }
-                case Scroll: { write_chars_at_pixel_xy(5 * OLED_WIDTH / 7 - (6 * 3), 19, "Scroll", false); break; }
-                case Underglow: { write_chars_at_pixel_xy(5 * OLED_WIDTH / 7 - (4 * 3), 19, "Glow", false); break; }
-                default: { write_chars_at_pixel_xy(5 * OLED_WIDTH / 7 - (5 * 3), 19, "Error", false); break; }
+            switch (saved_enc_mode) {
+                case Media: { draw_text_centered(display, 116, 50, small_font, "Media", 0, 0, 230, HSV_BLACK); break; }
+                case Window: { draw_text_centered(display, 116, 50, small_font, "Window", 0, 0, 230, HSV_BLACK); break; }
+                case Scroll: { draw_text_centered(display, 116, 50, small_font, "Scroll", 0, 0, 230, HSV_BLACK); break; }
+                case Lighting: { draw_text_centered(display, 116, 50, small_font, "Lighting", 0, 0, 230, HSV_BLACK); break; }
+                default: { draw_text_centered(display, 116, 50, small_font, "Error", 0, 0, 230, HSV_BLACK); break; }
 
             }
 
             break;
 
-        case OLED_Menu:
-            if (active_select_index < 4) // 0, 1, 2, 3
-            {
-                write_chars_at_pixel_xy(OLED_WIDTH / 2 - (7 * 3), 0, "Display", false);
-                draw_text_rectangle_center(OLED_WIDTH / 2 - 25, 9, 48, "LOGO", active_select_index == 0);
-                draw_text_rectangle_center(OLED_WIDTH / 2 + 25, 9, 48, "WPM", active_select_index == 1);
-                draw_text_rectangle_center(OLED_WIDTH / 2 - 25, 21, 48, "SYSTEM", active_select_index == 2);
-                draw_text_rectangle_center(OLED_WIDTH / 2 + 25, 21, 48, "WEATHER", active_select_index == 3);
-                draw_arrow(OLED_WIDTH - 8, OLED_HEIGHT / 2 + 4, 6, true); // right arrow         
-            }
-            else if (active_select_index < 8) // 4, 5, 6, 7
-            {
-                write_chars_at_pixel_xy(OLED_WIDTH / 2 - (7 * 3), 0, "Display", false);
-                draw_text_rectangle_center(OLED_WIDTH / 2 - 25, 9, 48, "WPM2", active_select_index == 4);
-                draw_text_rectangle_center(OLED_WIDTH / 2 + 25, 9, 48, "NA2", active_select_index == 5);
-                draw_text_rectangle_center(OLED_WIDTH / 2 - 25, 21, 48, "NA3", active_select_index == 6);
-                draw_text_rectangle_center(OLED_WIDTH / 2 + 25, 21, 48, "NA4", active_select_index == 7);
-                draw_arrow(7, OLED_HEIGHT / 2 + 4, 6, false); // left arrow
-                draw_arrow(OLED_WIDTH - 8, OLED_HEIGHT / 2 + 4, 6, true); // right arrow
-            }
-            else // 8, 9
-            {
-                draw_text_rectangle_center(OLED_WIDTH / 2, 15, 74, "DISPLAY OFF", active_select_index == 9);
-                draw_arrow(15, OLED_HEIGHT / 2 + 4, 6, false);  // left arrow
+        case Display_Menu:
+            if (active_select_index < 4) { // 0, 1, 2, 3
+                draw_text_centered(display, LCD_WIDTH / 2, 16, small_font, "Display", 0, 0, 230, HSV_BLACK);
+
+                draw_button(display, 44, 35, 68, 20, small_font, "LOGO", HSV_WHITE, HSV_BLACK, HSV_WHITE, HSV_BLUE, active_select_index == 0);
+                draw_button(display, 116, 35, 68, 20, small_font, "WPM", HSV_WHITE, HSV_BLACK, HSV_WHITE, HSV_BLUE, active_select_index == 1);
+                draw_button(display, 44, 55, 68, 20, small_font, "SYSTEM", HSV_WHITE, HSV_BLACK, HSV_WHITE, HSV_BLUE, active_select_index == 2);
+                draw_button(display, 116, 55, 68, 20, small_font, "WEATHER", HSV_WHITE, HSV_BLACK, HSV_WHITE, HSV_BLUE, active_select_index == 3);
+
+                //draw_arrow(OLED_WIDTH - 8, OLED_HEIGHT / 2 + 4, 6, true); // right arrow         
+            } else if (active_select_index < 8) { // 4, 5, 6, 7
+                draw_text_centered(display, LCD_WIDTH / 2, 16, small_font, "Display", 0, 0, 230, HSV_BLACK);
+
+                draw_button(display, 44, 35, 68, 20, small_font, "WPM2", HSV_WHITE, HSV_BLACK, HSV_WHITE, HSV_BLUE, active_select_index == 4);
+                draw_button(display, 116, 35, 68, 20, small_font, "NA2", HSV_WHITE, HSV_BLACK, HSV_WHITE, HSV_BLUE, active_select_index == 5);
+                draw_button(display, 44, 55, 68, 20, small_font, "NA3", HSV_WHITE, HSV_BLACK, HSV_WHITE, HSV_BLUE, active_select_index == 6);
+                draw_button(display, 116, 55, 68, 20, small_font, "NA4", HSV_WHITE, HSV_BLACK, HSV_WHITE, HSV_BLUE, active_select_index == 7);
+
+                //draw_arrow(7, OLED_HEIGHT / 2 + 4, 6, false); // left arrow
+                //draw_arrow(OLED_WIDTH - 8, OLED_HEIGHT / 2 + 4, 6, true); // right arrow
+            } else { // 8, 9
+                draw_button(display, LCD_WIDTH / 2, LCD_HEIGHT / 2, 90, 20, small_font, "DISPLAY OFF", HSV_WHITE, HSV_BLACK, HSV_WHITE, HSV_BLUE, active_select_index == 9);
+                
+                //draw_arrow(15, OLED_HEIGHT / 2 + 4, 6, false);  // left arrow
             }
 
             break;
 
         case Enc_Menu:
-            write_chars_at_pixel_xy(OLED_WIDTH / 2 - (7 * 3), 0, "Encoder", false);
-            draw_text_rectangle_center(OLED_WIDTH / 2 - 25, 9, 48, "MEDIA", active_select_index == 0);
-            draw_text_rectangle_center(OLED_WIDTH / 2 + 25, 9, 48, "WINDOW", active_select_index == 1);
-            draw_text_rectangle_center(OLED_WIDTH / 2 - 25, 21, 48, "SCROLL", active_select_index == 2);
-            draw_text_rectangle_center(OLED_WIDTH / 2 + 25, 21, 48, "GLOW", active_select_index == 3);
+            draw_text_centered(display, LCD_WIDTH / 2, 16, small_font, "Encoder", 0, 0, 230, HSV_BLACK);
+
+            draw_button(display, 44, 35, 68, 20, small_font, "MEDIA", HSV_WHITE, HSV_BLACK, HSV_WHITE, HSV_BLUE, active_select_index == 0);
+            draw_button(display, 116, 35, 68, 20, small_font, "WINDOW", HSV_WHITE, HSV_BLACK, HSV_WHITE, HSV_BLUE, active_select_index == 1);
+            draw_button(display, 44, 55, 68, 20, small_font, "SCROLL", HSV_WHITE, HSV_BLACK, HSV_WHITE, HSV_BLUE, active_select_index == 2);
+            draw_button(display, 116, 55, 68, 20, small_font, "LIGHTING", HSV_WHITE, HSV_BLACK, HSV_WHITE, HSV_BLUE, active_select_index == 3);
+
             break;
 
-        case WPM:
-        {
-            uint8_t current_wpm = get_current_wpm();
-            uint8_t anim_speed = map(current_wpm, 0, 230, 1, 5);
-            uint8_t frame_elapse = timer_read() * anim_speed / 180;
-            
-            render_animation(frame_elapse % 4);
-
-            if (current_wpm >= 240)
-            {
-                write_chars_at_pixel_xy(OLED_WIDTH / 2 - (3 * 3), OLED_HEIGHT / 2 - 3, "MAX", false);
-            }
-            else if (current_wpm >= 100)
-            {
+        case WPM: {
+            int16_t current_wpm = get_current_wpm();
+            if (current_wpm >= 240) {
+                draw_text_centered(display, LCD_WIDTH / 2, LCD_HEIGHT / 2, large_font, "MAX", HSV_WHITE, HSV_BLACK);
+            } else {
                 sprintf(wpm_str, "%d", current_wpm);
-                write_chars_at_pixel_xy(OLED_WIDTH / 2 - (3 * 3), OLED_HEIGHT / 2 - 3, wpm_str, false);
-            }
-            else if (current_wpm >= 10)
-            {
-                sprintf(wpm_str, "%d", current_wpm);
-                write_chars_at_pixel_xy(OLED_WIDTH / 2 - (3 * 2), OLED_HEIGHT / 2 - 3, wpm_str, false);
-            }
-            else if (current_wpm > 0)
-            {
-                sprintf(wpm_str, "%d", current_wpm);
-                write_chars_at_pixel_xy(OLED_WIDTH / 2 - (3 * 1), OLED_HEIGHT / 2 - 3, wpm_str, false);
+                draw_text_centered(display, LCD_WIDTH / 2, LCD_HEIGHT / 2, large_font, wpm_str, HSV_WHITE, HSV_BLACK);
             }
 
-            should_redraw_oled = true;
+            should_redraw_display = true;
             break;
         }
 
-
         case System:
-            draw_text_rectangle_center(OLED_WIDTH / 2, 10, 46, "System", false);
+            draw_text_centered(display, LCD_WIDTH / 2, LCD_HEIGHT / 2, small_font, "System", HSV_WHITE, HSV_BLACK);
             break;
 
         case Weather:
-            draw_text_rectangle_center(OLED_WIDTH / 2, 10, 50, "Weather", false);
+            draw_text_centered(display, LCD_WIDTH / 2, LCD_HEIGHT / 2, small_font, "Weather", HSV_WHITE, HSV_BLACK);
             break;
 
-        case WPM2:
-        {
+        case WPM2: {
             uint8_t current_wpm = get_current_wpm();
             uint8_t num_of_hor_lines = current_wpm / 5;
             if (num_of_hor_lines >= 4) { num_of_hor_lines = 4; }
@@ -544,85 +496,116 @@ bool oled_task_kb(void)
             if (num_of_vert_lines >= 14) { num_of_vert_lines = 14; }
             uint8_t num_of_redlines = (current_wpm - 140) / 5;
             if (num_of_redlines >= 30) { num_of_redlines = 30; }
-            uint8_t starting_x_pos = 20;
-            uint8_t starting_y_pos = OLED_HEIGHT - 1;
+            uint8_t starting_x_pos = 40;
+            uint8_t starting_y_pos = 60;
 
-            for (int i = 0; i < num_of_hor_lines; i++)
-            {
-                draw_line_h(starting_x_pos + i, (starting_y_pos) - (i * 3), 11, true);
-                draw_line_h(starting_x_pos + 1 + i, (starting_y_pos) - 1 - (i * 3), 11, true);
+            for (int i = 0; i < num_of_hor_lines; i++) {
+                //draw_line_h(starting_x_pos + i, (starting_y_pos) - (i * 3), 11, true);
+                //draw_line_h(starting_x_pos + 1 + i, (starting_y_pos) - 1 - (i * 3), 11, true);
+                qp_line(display, starting_x_pos + i, starting_y_pos - (i * 3), starting_x_pos + i + 11, starting_y_pos - (i * 3), HSV_WHITE);
+                qp_line(display, starting_x_pos + 1 + i, starting_y_pos - 1 - (i * 3), starting_x_pos + i + 11, starting_y_pos - 1 - (i * 3), HSV_WHITE);
             }
 
-            if (current_wpm >= 30)
-            {
-                draw_line_h(starting_x_pos + 4, starting_y_pos - 12, 12, true);
-                draw_line_h(starting_x_pos + 5, starting_y_pos - 13, 8, true);
-                draw_line_h(starting_x_pos + 5, starting_y_pos - 14, 4, true);
+            if (current_wpm >= 30) {
+                //draw_line_h(starting_x_pos + 4, starting_y_pos - 12, 12, true);
+                //draw_line_h(starting_x_pos + 5, starting_y_pos - 13, 8, true);
+                //draw_line_h(starting_x_pos + 5, starting_y_pos - 14, 4, true);
+                qp_line(display, starting_x_pos + 4, starting_y_pos - 12, starting_x_pos + 16, starting_y_pos - 12, HSV_WHITE);
+                qp_line(display, starting_x_pos + 5, starting_y_pos - 13, starting_x_pos + 13, starting_y_pos - 13, HSV_WHITE);
+                qp_line(display, starting_x_pos + 5, starting_y_pos - 14, starting_x_pos + 9, starting_y_pos - 14, HSV_WHITE);
             }
             
-            if (current_wpm >= 35)
-            {
-                draw_line_h(starting_x_pos + 13, starting_y_pos - 14, 4, true);
-                draw_line_h(starting_x_pos + 9, starting_y_pos - 15, 6, true);
-                draw_line_h(starting_x_pos + 6, starting_y_pos - 16, 7, true);
-                draw_line_h(starting_x_pos + 7, starting_y_pos - 17, 4, true);
-                draw_line_h(starting_x_pos + 7, starting_y_pos - 18, 2, true);
+            if (current_wpm >= 35) {
+                //draw_line_h(starting_x_pos + 13, starting_y_pos - 14, 4, true);
+                //draw_line_h(starting_x_pos + 9, starting_y_pos - 15, 6, true);
+                //draw_line_h(starting_x_pos + 6, starting_y_pos - 16, 7, true);
+                //draw_line_h(starting_x_pos + 7, starting_y_pos - 17, 4, true);
+                //draw_line_h(starting_x_pos + 7, starting_y_pos - 18, 2, true);
+                qp_line(display, starting_x_pos + 13, starting_y_pos - 14, starting_x_pos + 17, starting_y_pos - 14, HSV_WHITE);
+                qp_line(display, starting_x_pos + 9, starting_y_pos - 15, starting_x_pos + 15, starting_y_pos - 15, HSV_WHITE);
+                qp_line(display, starting_x_pos + 6, starting_y_pos - 16, starting_x_pos + 13, starting_y_pos - 16, HSV_WHITE);
+                qp_line(display, starting_x_pos + 7, starting_y_pos - 17, starting_x_pos + 11, starting_y_pos - 17, HSV_WHITE);
+                qp_line(display, starting_x_pos + 7, starting_y_pos - 18, starting_x_pos + 9, starting_y_pos - 18, HSV_WHITE);
             }
 
-            if (current_wpm >= 40)
-            {
-                oled_write_pixel(starting_x_pos + 17, starting_y_pos - 15, true);
-                draw_line_h(starting_x_pos + 15, starting_y_pos - 16, 2, true);
-                draw_line_h(starting_x_pos + 13, starting_y_pos - 17, 3, true);
-                draw_line_h(starting_x_pos + 11, starting_y_pos - 18, 4, true);
-                draw_line_h(starting_x_pos + 9, starting_y_pos - 19, 5, true);
-                draw_line_h(starting_x_pos + 8, starting_y_pos - 20, 4, true);
-                draw_line_h(starting_x_pos + 9, starting_y_pos - 21, 2, true);
+            if (current_wpm >= 40) {
+                //oled_write_pixel(starting_x_pos + 17, starting_y_pos - 15, true);
+                //draw_line_h(starting_x_pos + 15, starting_y_pos - 16, 2, true);
+                //draw_line_h(starting_x_pos + 13, starting_y_pos - 17, 3, true);
+                //draw_line_h(starting_x_pos + 11, starting_y_pos - 18, 4, true);
+                //draw_line_h(starting_x_pos + 9, starting_y_pos - 19, 5, true);
+                //draw_line_h(starting_x_pos + 8, starting_y_pos - 20, 4, true);
+                //draw_line_h(starting_x_pos + 9, starting_y_pos - 21, 2, true);
+                qp_line(display, starting_x_pos + 17, starting_y_pos - 15, starting_x_pos + 17, starting_y_pos - 15, HSV_WHITE);
+                qp_line(display, starting_x_pos + 15, starting_y_pos - 16, starting_x_pos + 17, starting_y_pos - 16, HSV_WHITE);
+                qp_line(display, starting_x_pos + 13, starting_y_pos - 17, starting_x_pos + 16, starting_y_pos - 17, HSV_WHITE);
+                qp_line(display, starting_x_pos + 11, starting_y_pos - 18, starting_x_pos + 15, starting_y_pos - 18, HSV_WHITE);
+                qp_line(display, starting_x_pos + 9, starting_y_pos - 19, starting_x_pos + 14, starting_y_pos - 19, HSV_WHITE);
+                qp_line(display, starting_x_pos + 8, starting_y_pos - 20, starting_x_pos + 12, starting_y_pos - 20, HSV_WHITE);
+                qp_line(display, starting_x_pos + 9, starting_y_pos - 21, starting_x_pos + 11, starting_y_pos - 21, HSV_WHITE);
             }
 
-            if (current_wpm >= 45)
-            {
-                draw_line_v(starting_x_pos + 11, starting_y_pos - 23, 2, true);
-                draw_line_v(starting_x_pos + 12, starting_y_pos - 24, 4, true);
-                draw_line_v(starting_x_pos + 13, starting_y_pos - 24, 4, true);
-                draw_line_v(starting_x_pos + 14, starting_y_pos - 23, 4, true);
-                draw_line_v(starting_x_pos + 15, starting_y_pos - 21, 3, true);
-                draw_line_v(starting_x_pos + 16, starting_y_pos - 20, 3, true);
-                draw_line_v(starting_x_pos + 17, starting_y_pos - 19, 3, true);
-                draw_line_v(starting_x_pos + 18, starting_y_pos - 18, 3, true);
-                draw_line_v(starting_x_pos + 19, starting_y_pos - 17, 1, true);
+            if (current_wpm >= 45) {
+                //draw_line_v(starting_x_pos + 11, starting_y_pos - 23, 2, true);
+                //draw_line_v(starting_x_pos + 12, starting_y_pos - 24, 4, true);
+                //draw_line_v(starting_x_pos + 13, starting_y_pos - 24, 4, true);
+                //draw_line_v(starting_x_pos + 14, starting_y_pos - 23, 4, true);
+                //draw_line_v(starting_x_pos + 15, starting_y_pos - 21, 3, true);
+                //draw_line_v(starting_x_pos + 16, starting_y_pos - 20, 3, true);
+                //draw_line_v(starting_x_pos + 17, starting_y_pos - 19, 3, true);
+                //draw_line_v(starting_x_pos + 18, starting_y_pos - 18, 3, true);
+                //draw_line_v(starting_x_pos + 19, starting_y_pos - 17, 1, true);
+                qp_line(display, starting_x_pos + 11, starting_y_pos - 23, starting_x_pos + 11, starting_y_pos - 21, HSV_WHITE);
+                qp_line(display, starting_x_pos + 12, starting_y_pos - 24, starting_x_pos + 12, starting_y_pos - 20, HSV_WHITE);
+                qp_line(display, starting_x_pos + 13, starting_y_pos - 24, starting_x_pos + 13, starting_y_pos - 20, HSV_WHITE);
+                qp_line(display, starting_x_pos + 14, starting_y_pos - 23, starting_x_pos + 14, starting_y_pos - 19, HSV_WHITE);
+                qp_line(display, starting_x_pos + 15, starting_y_pos - 21, starting_x_pos + 15, starting_y_pos - 18, HSV_WHITE);
+                qp_line(display, starting_x_pos + 16, starting_y_pos - 20, starting_x_pos + 16, starting_y_pos - 17, HSV_WHITE);
+                qp_line(display, starting_x_pos + 17, starting_y_pos - 19, starting_x_pos + 17, starting_y_pos - 16, HSV_WHITE);
+                qp_line(display, starting_x_pos + 18, starting_y_pos - 18, starting_x_pos + 18, starting_y_pos - 15, HSV_WHITE);
+                qp_line(display, starting_x_pos + 19, starting_y_pos - 17, starting_x_pos + 19, starting_y_pos - 16, HSV_WHITE);
+            }
+            
+            if (current_wpm >= 50) {
+                //draw_line_v(starting_x_pos + 14, starting_y_pos - 25, 1, true);
+                //draw_line_v(starting_x_pos + 15, starting_y_pos - 26, 3, true);
+                //draw_line_v(starting_x_pos + 16, starting_y_pos - 26, 5, true);
+                //draw_line_v(starting_x_pos + 17, starting_y_pos - 24, 4, true);
+                //draw_line_v(starting_x_pos + 18, starting_y_pos - 22, 3, true);
+                //draw_line_v(starting_x_pos + 19, starting_y_pos - 20, 2, true);
+                //draw_line_v(starting_x_pos + 20, starting_y_pos - 18, 1, true);
+
+                qp_line(display, starting_x_pos + 14, starting_y_pos - 25, starting_x_pos + 14, starting_y_pos - 24, HSV_WHITE);
+                qp_line(display, starting_x_pos + 15, starting_y_pos - 26, starting_x_pos + 15, starting_y_pos - 23, HSV_WHITE);
+                qp_line(display, starting_x_pos + 16, starting_y_pos - 26, starting_x_pos + 16, starting_y_pos - 21, HSV_WHITE);
+                qp_line(display, starting_x_pos + 17, starting_y_pos - 24, starting_x_pos + 17, starting_y_pos - 20, HSV_WHITE);
+                qp_line(display, starting_x_pos + 18, starting_y_pos - 22, starting_x_pos + 18, starting_y_pos - 19, HSV_WHITE);
+                qp_line(display, starting_x_pos + 19, starting_y_pos - 20, starting_x_pos + 19, starting_y_pos - 18, HSV_WHITE);
+                qp_line(display, starting_x_pos + 20, starting_y_pos - 18, starting_x_pos + 20, starting_y_pos - 17, HSV_WHITE);
             }
 
-            if (current_wpm >= 50)
-            {
-                draw_line_v(starting_x_pos + 14, starting_y_pos - 25, 1, true);
-                draw_line_v(starting_x_pos + 15, starting_y_pos - 26, 3, true);
-                draw_line_v(starting_x_pos + 16, starting_y_pos - 26, 5, true);
-                draw_line_v(starting_x_pos + 17, starting_y_pos - 24, 4, true);
-                draw_line_v(starting_x_pos + 18, starting_y_pos - 22, 3, true);
-                draw_line_v(starting_x_pos + 19, starting_y_pos - 20, 2, true);
-                draw_line_v(starting_x_pos + 20, starting_y_pos - 18, 1, true);
+            if (current_wpm >= 55) {
+                //draw_line_v(starting_x_pos + 18, starting_y_pos - 27, 3, true);
+                //draw_line_v(starting_x_pos + 19, starting_y_pos - 27, 5, true);
+                //draw_line_v(starting_x_pos + 20, starting_y_pos - 28, 8, true);
+                //draw_line_v(starting_x_pos + 21, starting_y_pos - 24, 6, true);
+                //draw_line_v(starting_x_pos + 22, starting_y_pos - 20, 2, true);
+
+                qp_line(display, starting_x_pos + 18, starting_y_pos - 27, starting_x_pos + 18, starting_y_pos - 24, HSV_WHITE);
+                qp_line(display, starting_x_pos + 19, starting_y_pos - 27, starting_x_pos + 19, starting_y_pos - 22, HSV_WHITE);
+                qp_line(display, starting_x_pos + 20, starting_y_pos - 28, starting_x_pos + 20, starting_y_pos - 20, HSV_WHITE);
+                qp_line(display, starting_x_pos + 21, starting_y_pos - 24, starting_x_pos + 21, starting_y_pos - 18, HSV_WHITE);
+                qp_line(display, starting_x_pos + 22, starting_y_pos - 20, starting_x_pos + 22, starting_y_pos - 18, HSV_WHITE);
             }
 
-            if (current_wpm >= 55)
-            {
-                draw_line_v(starting_x_pos + 18, starting_y_pos - 27, 3, true);
-                draw_line_v(starting_x_pos + 19, starting_y_pos - 27, 5, true);
-                draw_line_v(starting_x_pos + 20, starting_y_pos - 28, 8, true);
-                draw_line_v(starting_x_pos + 21, starting_y_pos - 24, 6, true);
-                draw_line_v(starting_x_pos + 22, starting_y_pos - 20, 2, true);
-            }
-
-            if (current_wpm >= 60)
-            {
+            /*if (current_wpm >= 60) {
                 draw_line_v(starting_x_pos + 22, starting_y_pos - 28, 4, true);
                 draw_line_v(starting_x_pos + 23, starting_y_pos - 28, 8, true);
                 draw_line_v(starting_x_pos + 24, starting_y_pos - 25, 6, true);
                 draw_line_v(starting_x_pos + 25, starting_y_pos - 21, 2, true);
             }
 
-            if (current_wpm >= 65)
-            {
+            if (current_wpm >= 65) {
                 for (int i = 0; i < num_of_vert_lines; i++)
                 {
                     draw_line_v(starting_x_pos + 25 + (i * 3), starting_y_pos - 28, 3, true);
@@ -632,8 +615,7 @@ bool oled_task_kb(void)
                 }
             }
 
-            if (current_wpm >= 140)
-            {
+            if (current_wpm >= 140) {
                 draw_line_v(starting_x_pos + 66, starting_y_pos - 28, 3, true);
                 draw_line_v(starting_x_pos + 67, starting_y_pos - 28, 7, true);
 
@@ -659,46 +641,39 @@ bool oled_task_kb(void)
 
             draw_line_h(starting_x_pos + 21, starting_y_pos - 18, 2, true);
             draw_line_h(starting_x_pos + 23, starting_y_pos - 19, 46, true);
-
+            
             // Write WPM counter
             sprintf(wpm_str, "%d", current_wpm);
 
-            if (current_wpm >= 240)
-            {
+            if (current_wpm >= 240) {
                 write_chars_at_pixel_xy(OLED_WIDTH / 2 - (3 * 3), OLED_HEIGHT / 2 + 7, "MAX", false);
-            }
-            else if (current_wpm >= 100)
-            {
+            } else if (current_wpm >= 100) {
                 sprintf(wpm_str, "%d", current_wpm);
                 write_chars_at_pixel_xy(OLED_WIDTH / 2 - (3 * 3), OLED_HEIGHT / 2 + 7, wpm_str, false);
-            }
-            else if (current_wpm >= 10)
-            {
+            } else if (current_wpm >= 10) {
                 sprintf(wpm_str, "%d", current_wpm);
                 write_chars_at_pixel_xy(OLED_WIDTH / 2 - (3 * 2), OLED_HEIGHT / 2 + 7, wpm_str, false);
-            }
-            else if (current_wpm > 0)
-            {
+            } else if (current_wpm > 0) {
                 sprintf(wpm_str, "%d", current_wpm);
                 write_chars_at_pixel_xy(OLED_WIDTH / 2 - (3 * 1), OLED_HEIGHT / 2 + 7, wpm_str, false);
             }
 
-            write_chars_at_pixel_xy(OLED_WIDTH / 2 - (5 * 3), OLED_HEIGHT / 2 - 3, " WPM ", true);
+            write_chars_at_pixel_xy(OLED_WIDTH / 2 - (5 * 3), OLED_HEIGHT / 2 - 3, " WPM ", true);*/
 
-            should_redraw_oled = true;
+            should_redraw_display = true;
             break;            
         }
 
         case NA2:
-            draw_text_rectangle_center(OLED_WIDTH / 2, 10, 46, "NA2", false);
+            draw_text_centered(display, LCD_WIDTH / 2, LCD_HEIGHT / 2, small_font, "NA2", HSV_WHITE, HSV_BLACK);
             break;
 
         case NA3:
-            draw_text_rectangle_center(OLED_WIDTH / 2, 10, 46, "NA3", false);
+            draw_text_centered(display, LCD_WIDTH / 2, LCD_HEIGHT / 2, small_font, "NA3", HSV_WHITE, HSV_BLACK);
             break;
 
         case NA4:
-            draw_text_rectangle_center(OLED_WIDTH / 2, 10, 46, "NA4", false);
+            draw_text_centered(display, LCD_WIDTH / 2, LCD_HEIGHT / 2, small_font, "NA4", HSV_WHITE, HSV_BLACK);
             break;
 
         case Off:
@@ -708,32 +683,19 @@ bool oled_task_kb(void)
             break;
     }
 
-    oled_render();
-
-    return false;
-}
-
-void suspend_power_down_user(void)
-{
-    oled_off(); // Turn off OLED when computer shuts off
+    qp_flush(display);
 }
 
 // ENCODER STUFF -----------------
 // Differentiate encoder short and long press
-bool process_record_kb(uint16_t keycode, keyrecord_t *record)
-{
-    switch (keycode)
-    {
+bool process_record_kb(uint16_t keycode, keyrecord_t *record) {
+    switch (keycode) {
         case ENC_PUSH:
-            if (record->event.pressed)
-            {
+            if (record->event.pressed) {
                 encoder_press_timer = timer_read32();
                 encoder_is_down = true;
-            }
-            else
-            {
-                if (encoder_is_down)
-                {
+            } else {
+                if (encoder_is_down) {
                     encoder_is_short_pressed = true;
                 }
 
@@ -743,14 +705,11 @@ bool process_record_kb(uint16_t keycode, keyrecord_t *record)
             return false;
 
         case ENC_SEC:
-            if (record->event.pressed)
-            {
+            if (record->event.pressed) {
                 encoder_press_timer = timer_read32();
                 encoder_is_down = true;
                 encoder_secondary_push_active = true;
-            }
-            else
-            {
+            } else {
                 if (encoder_is_down)
                 {
                     encoder_is_short_pressed = true;
@@ -767,219 +726,139 @@ bool process_record_kb(uint16_t keycode, keyrecord_t *record)
     return process_record_user(keycode, record);
 }
 
-void increase_active_select_index(int8_t amount)
-{
-    should_redraw_oled = true;
-
-    if (active_select_index + amount > max_select_index) // If active index is greater than max index, wrap the selection to first index
-    {
-        active_select_index = should_menu_select_wrap ? 0 : max_select_index;
-    }
-    else if (active_select_index + amount < 0) // If active index is less than 0, wrap the selection to last index
-    {
-        active_select_index = should_menu_select_wrap ? max_select_index : 0;
-    }
-    else
-    {
-        active_select_index += amount;
-    }
-
-}
-
 // Handle encoder knob rotation CW and CCW
-bool encoder_update_kb(uint8_t index, bool clockwise)
-{
+bool encoder_update_kb(uint8_t index, bool clockwise) {
     if (!encoder_update_user(index, clockwise)) { return false; }
 
-    oled_on();
+    qp_power(display, true);
 
     uint8_t layer = get_highest_layer(layer_state | default_layer_state);
 
-    switch(enc_mode)
-    {
+    switch(enc_mode) {
         case Select:
-            if (layer == 0) // If layer 0
-            {
-                if (clockwise)
-                {
+            if (layer == 0) { // If layer 0
+                if (clockwise) {
                     increase_active_select_index(1);
-                }
-                else
-                {
+                } else {
                     increase_active_select_index(-1);
                 }
-            }
-            else // If layer 1
-            {
-                if (clockwise)
-                {
+            } else { // If layer 1
+                if (clockwise) {
                     increase_active_select_index(1);
-                }
-                else
-                {
+                } else {
                     increase_active_select_index(-1);
                 }
             }
 
             break;
         case Media:
-            if (layer == 0) // If layer 0
-            {
-                if (clockwise)
-                {
+            if (layer == 0) { // If layer 0
+                if (clockwise) {
                     tap_code_delay(KC_VOLU, 10);
-                }
-                else
-                {
+                } else {
                     tap_code_delay(KC_VOLD, 10);
                 }
-            }
-            else // If layer 1
-            {
-                if (clockwise)
-                {
+            } else { // If layer 1
+                if (clockwise) {
                     tap_code(KC_MNXT);
-                }
-                else
-                {
+                } else {
                     tap_code(KC_MPRV);
                 }
             }
 
             break;
         case Window:
-            if (layer == 0) // If layer 0
-            {
-                if (clockwise)
-                {
-                  if (!is_alt_tab_active)
-                  {
-                    is_alt_tab_active = true;
-                    register_code(KC_LALT);
-                  }
+            if (layer == 0) { // If layer 0
+                if (clockwise) {
+                    if (!is_alt_tab_active) {
+                        is_alt_tab_active = true;
+                        register_code(KC_LALT);
+                    }
 
-                  alt_tab_timer = timer_read();
-                  tap_code16(KC_TAB);
-                }
-                else
-                {
-                  if (!is_alt_tab_active)
-                  {
-                    is_alt_tab_active = true;
-                    register_code(KC_LALT);
-                  }
+                    alt_tab_timer = timer_read();
+                    tap_code16(KC_TAB);
+                } else {
+                    if (!is_alt_tab_active) {
+                        is_alt_tab_active = true;
+                        register_code(KC_LALT);
+                    }
 
-                  alt_tab_timer = timer_read();
-                  tap_code16(S(KC_TAB));
+                    alt_tab_timer = timer_read();
+                    tap_code16(S(KC_TAB));
                 }
-            }
-            else // If layer 1
-            {
-                if (clockwise)
-                {
+            } else { // If layer 1{
+                if (clockwise) {
                   tap_code16(C(KC_TAB));
-                }
-                else
-                {
+                } else {
                   tap_code16(S(C(KC_TAB)));
                 }
             }
             break;
         case Scroll:
-            if (layer == 0)
-            {
-                if (clockwise)
-                {
+            if (layer == 0) {
+                if (clockwise) {
                     tap_code(KC_DOWN);
-                }
-                else
-                {
+                } else {
                     tap_code(KC_UP);
                 }
-            }
-            else
-            {
-                if (clockwise)
-                {
+            } else {
+                if (clockwise) {
                     tap_code(KC_PGDN);
-                }
-                else
-                {
+                } else {
                     tap_code(KC_PGUP);
                 }
             }
 
             break;
-        case Underglow:
-            if (layer == 0)
-            {
-                if (clockwise)
-                {
+        case Lighting:
+            if (layer == 0) {
+                if (clockwise) {
                     rgblight_increase_hue();
-                }
-                else
-                {
+                } else {
                     rgblight_decrease_hue();
                 }
-            }
-            else
-            {
-                if (clockwise)
-                {
+            } else {
+                if (clockwise) {
                     rgblight_increase_sat();
-                }
-                else
-                {
+                } else {
                     rgblight_decrease_sat();
                 }
             }
             break;
     }
 
+    housekeeping_task_user();
+
     return true;
 }
 
-void keyboard_post_init_kb(void)
-{
-    enc_mode = Media;
-    saved_enc_mode = enc_mode;
-
-    oled_mode = WPM2;
-    saved_oled_mode = oled_mode;
-}
-
-void matrix_scan_user(void)
-{
+void matrix_scan_user(void) {
     enc_state_update();
 
-    if (is_alt_tab_active)
-    {
-        if (timer_elapsed(alt_tab_timer) > 1250)
-        {
+    if (is_alt_tab_active) {
+        if (timer_elapsed(alt_tab_timer) > 1250) {
             unregister_code(KC_LALT);
             is_alt_tab_active = false;
         }
     }
 }
 
-// UNDERGLOW LED STUFF -----------------
+// Lighting LED STUFF -----------------
 #ifdef RGBLIGHT_ENABLE
 
 const rgblight_segment_t PROGMEM my_capslock_layer[] = RGBLIGHT_LAYER_SEGMENTS(
-    {47, 10, HSV_RED}, // Light 10 LEDs, starting with LED 47
-    {5, 1, HSV_OFF},
-    {7, 1, HSV_OFF}
+    {32, 1, HSV_BLACK},
+    {33, 14, HSV_RED},
+    {0, 5, HSV_RED}
 );
 const rgblight_segment_t* const PROGMEM my_rgb_layers[] = RGBLIGHT_LAYERS_LIST(my_capslock_layer);
 
-void keyboard_post_init_user(void)
-{
+void keyboard_post_init_user(void) {
     // Enable the LED layers
     rgblight_layers = my_rgb_layers;
 }
 
-bool led_update_user(led_t led_state)
-{
+bool led_update_user(led_t led_state) {
     rgblight_set_layer_state(0, led_state.caps_lock);
 
     return true;
