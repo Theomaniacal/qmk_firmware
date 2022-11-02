@@ -77,9 +77,9 @@ static enum display_modes {
 // DISPLAY STUFF -----------------
 char wpm_str[10];
 
-void raw_hid_receive(uint8_t *data, uint8_t length) {
+/*void raw_hid_receive(uint8_t *data, uint8_t length) {
     // Your code goes here. data is the packet received from host.
-}
+}*/
 
 // DISPLAY Draw Functions
 void draw_text_centered(painter_device_t device, uint8_t x, uint8_t y, painter_font_handle_t font, char* str, uint8_t hue_fg, uint8_t sat_fg, uint8_t val_fg, uint8_t hue_bg, uint8_t sat_bg, uint8_t val_bg) {

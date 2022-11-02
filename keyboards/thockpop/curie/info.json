@@ -121,8 +121,16 @@
         "pin": "GP29",
         "max_brightness": 206,
         "animations": {
+            "alternating": true,
             "breathing": true,
-            "rainbow swirl": true
+            "christmas": true,
+            "knight": true,
+            "rainbow mood": true,
+            "rainbow swirl": true,
+            "rgb_test": true,
+            "snake": true,
+            "static_gradient": true,
+            "twinkle": true
         }
     },
 
