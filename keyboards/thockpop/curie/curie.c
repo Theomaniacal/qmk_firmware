@@ -23,13 +23,14 @@
 #include "fonts/montserrat14.qff.h"
 #include "fonts/lato22.qff.h"
 #include "graphics/signature.qgf.h"
+#include "graphics/meta_curie.qgf.h"
 
 #define ENCODER_LONG_PRESS_TIME 300 // 0.3 second for press to count as long press
 #define ANIM_SPEED_MAX 60
 #define ANIM_SPEED_MIN 10
 #define DISPLAY_MENU_MODE_AMOUNT 3 // Used to represent how many OLED modes cannot be saved
 #define ENC_MENU_MODE_AMOUNT 1 // Used to represent how many Encoder modes cannot be saved
-#define LCD_TIMEOUT 30000
+#define LCD_TIMEOUT 120000
 
 static painter_device_t display;
 static painter_font_handle_t small_font;
@@ -37,8 +38,10 @@ static painter_font_handle_t med_font;
 static painter_font_handle_t large_font;
 
 static painter_image_handle_t signature;
+static painter_image_handle_t meta_curie;
 
 static bool should_redraw_display = true;
+static bool is_lcd_timed_out = false;
 static bool encoder_is_down = false;
 static bool encoder_secondary_push_active = false;
 static bool encoder_is_short_pressed = false;
@@ -352,6 +355,7 @@ void keyboard_post_init_kb(void) {
     large_font = qp_load_font_mem(font_lato22);
 
     signature = qp_load_image_mem(gfx_signature);
+    meta_curie = qp_load_image_mem(gfx_meta_curie);
 
     qp_power(display, true);
     qp_clear(display);
@@ -370,16 +374,23 @@ void suspend_wakeup_init_user(void) {
 }
 
 void housekeeping_task_kb(void) {
-    if (last_input_activity_elapsed() < LCD_TIMEOUT) {
-        qp_power(display, true);
+
+    if (last_input_activity_elapsed() >= LCD_TIMEOUT) {
+        if (!is_lcd_timed_out) {
+            change_encoder_mode(saved_enc_mode);
+            change_display_mode(saved_display_mode);
+            qp_power(display, false);
+            is_lcd_timed_out = true;
+        }
     } else {
-        qp_power(display, false);
-        change_encoder_mode(saved_enc_mode);
-        change_display_mode(saved_display_mode);
+        qp_power(display, true);
+        is_lcd_timed_out = false;
     }
 
+    housekeeping_task_user();
+
     static uint32_t last_draw = 0;
-    if (timer_elapsed32(last_draw) > 33) { // Throttle to 30fps
+    if (timer_elapsed32(last_draw) > 33) { // FPS cap (e.g., 1/30 = 33ms)
         last_draw = timer_read32();
     } else {
         return;
@@ -387,6 +398,7 @@ void housekeeping_task_kb(void) {
 
     if (!should_redraw_display) { return; }
     should_redraw_display = false;
+
     qp_rect(display, 0, 0, 160, 81, HSV_BLACK, true);
 
     switch (display_mode) {
@@ -665,7 +677,7 @@ void housekeeping_task_kb(void) {
         }
 
         case NA2:
-            draw_text_centered(display, LCD_WIDTH / 2, LCD_HEIGHT / 2, small_font, "NA2", HSV_WHITE, HSV_BLACK);
+            qp_drawimage(display, 0, 0, meta_curie);
             break;
 
         case NA3:
@@ -813,21 +825,19 @@ bool encoder_update_kb(uint8_t index, bool clockwise) {
         case Lighting:
             if (layer == 0) {
                 if (clockwise) {
-                    rgblight_increase_hue();
+                    rgblight_increase_hue_noeeprom();
                 } else {
-                    rgblight_decrease_hue();
+                    rgblight_decrease_hue_noeeprom();
                 }
             } else {
                 if (clockwise) {
-                    rgblight_increase_sat();
+                    rgblight_increase_sat_noeeprom();
                 } else {
-                    rgblight_decrease_sat();
+                    rgblight_decrease_sat_noeeprom();
                 }
             }
             break;
     }
-
-    housekeeping_task_user();
 
     return true;
 }

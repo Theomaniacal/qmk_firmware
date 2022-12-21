@@ -43,7 +43,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #define LCD_DC_PIN   GP23
 #define LCD_BL_PIN   GP22
 #define LCD_RST_PIN  GP24
-#define LCD_SPI_DIV 2
+#define LCD_SPI_DIV 8
 #define LCD_SPI_MODE 0
 #define LCD_WIDTH 160
 #define LCD_HEIGHT 80

@@ -7,4 +7,5 @@ SRC += \
 	fonts/montserrat11.qff.c \
 	fonts/montserrat14.qff.c \
 	fonts/lato22.qff.c \
-	graphics/signature.qgf.c
+	graphics/signature.qgf.c \
+	graphics/meta_curie.qgf.c
